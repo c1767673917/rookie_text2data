@@ -22,6 +22,43 @@ class RookieText2dataTool(Tool):
         # 获取元数据
         # metadata = self._get_metadata(conn_params)
 
+        # 给深度思考模型的两阶段系统提示
+        system_prompt = f"""你是一位资深数据库工程师兼SQL优化专家，拥有10年以上DBA经验。
+我将提供数据库元数据和一个用自然语言表达的查询需求，请你生成优化的SQL查询语句。
+
+请用以下两步完成：
+
+第一步：分析用户需求并理解数据结构
+- 深入理解用户的自然语言查询意图
+- 识别查询中涉及的实体、关系和条件
+- 确认哪些表和字段需要使用
+
+第二步：构建SQL语句并优化
+- 根据第一步分析构建基础SQL语句
+- 应用以下优化和安全规则：
+  1. 仅返回SELECT语句，不包含INSERT/UPDATE/DELETE等DML操作
+  2. 使用LIMIT语句限制结果（用户未指定数量时默认100条）
+  3. 所有字段使用反引号包裹，符合MySQL标识符规范
+  4. 避免SELECT *，仅返回需求中必要字段
+  5. 多表关联优先使用INNER JOIN
+  6. 确保严格使用提供的元数据中的表和字段，不允许使用未定义内容
+
+数据库元数据：
+{meta_data}
+
+返回格式示例：
+SELECT 
+    `order_id` AS 订单编号,
+    `amount` * 1.05 AS 含税金额
+FROM 
+    `orders` o
+INNER JOIN 
+    `customers` c ON o.customer_id = c.id
+WHERE 
+    o.status = 'paid' 
+    AND c.region = 'Asia'
+LIMIT 100;"""
+
         response = self.session.model.llm.invoke(
             model_config=LLMModelConfig(
                 provider=model_info.get('provider'),
@@ -30,48 +67,9 @@ class RookieText2dataTool(Tool):
                 completion_params=model_info.get('completion_params')
             ),
             prompt_messages=[
-                SystemPromptMessage(
-                    content=f"""你是一位资深数据库工程师兼SQL优化专家，拥有10年以上DBA经验。请根据提供的数据库元数据DDL和自然语言需求描述，生成符合企业级标准的优化SQL语句。
-
-                            ## 系统要求：
-                            1. 必须严格嵌入提供的DDL元数据{meta_data}，禁止使用任何未声明的表或字段
-                            2. 仅返回SELECT语句，禁止包含INSERT/UPDATE/DELETE等DML操作
-                            3. 必须使用LIMIT语句进行结果限制，防止数据泄露风险
-                            5. 如果用户提出了具体的数据数量，则Limit用户的查询数量，否则Limit 100
-                            4. 所有字段必须使用反引号包裹，符合MySQL标识符规范
-
-                            ## 优化原则：
-                            1. 采用覆盖索引策略，确保查询命中至少2个索引
-                            2. 避免SELECT *，仅返回需求中的必要字段
-                            3. 对日期字段使用CURDATE()等函数时需标注时间范围
-                            4. 多表关联必须使用INNER JOIN，禁止LEFT/RIGHT JOIN
-
-                            ## 验证机制：
-                            1. 生成后自动检查表是否存在，若不存在则抛出错误
-                            2. 条件字段值必须存在于目标表中，否则提示字段不存在
-                            3. 自动生成EXPLAIN计划，确保type列显示为ref或eq_ref
-                            4. 仅返回生成的SQL语句，禁止返回注释、DDL、描述等与SQL无关内容
-                            5. 禁止使用任何转义字符（如''或\"）
-                            6. 禁止在开头和结尾使用``` ```包裹SQL语句
-
-                            ## 输出规范：
-                                SELECT 
-                                    `order_id` AS 订单编号,
-                                    `amount` * 1.05 AS 含税金额
-                                FROM 
-                                    `orders` o
-                                INNER JOIN 
-                                    `customers` c ON o.customer_id = c.id
-                                WHERE 
-                                    o.status = 'paid' 
-                                    AND c.region = 'Asia'
-                                    AND o.created_at BETWEEN '2025-01-01' AND CURDATE()
-                                LIMIT 100;
-                    """
-                ),
+                SystemPromptMessage(content=system_prompt),
                 UserPromptMessage(
                     content=f"用户想要查询的数据需求为：{tool_parameters.get('query')}"
-                    
                 )
             ],
             stream=False
@@ -292,12 +290,41 @@ class RookieText2dataTool(Tool):
                     "message": "数据库连接已关闭"
                 }
 
-
-
     def _extract_sql_from_text(self, text: str) -> str:
-        """提取 ``的```sql...```代码块中的SQL内容（若存在）"""
-        pattern = r'```sql\s*(.*?)\s*```'
-        match = re.search(pattern, text, flags=re.DOTALL)
-        if match:
-            return match.group(1).strip()
-        return ""
+        """提取SQL内容，支持多种格式输出（包括深度思考模型的分析输出）"""
+        # 先尝试匹配代码块中的SQL
+        code_block_patterns = [
+            r'```sql\s*(.*?)\s*```',  # SQL标准代码块
+            r'```\s*(SELECT.*?LIMIT.*?)\s*```',  # 无语言标记但包含SELECT和LIMIT的代码块
+            r'`{3}(SELECT.*?LIMIT.*?)`{3}'  # 另一种代码块形式
+        ]
+        
+        for pattern in code_block_patterns:
+            match = re.search(pattern, text, flags=re.DOTALL | re.IGNORECASE)
+            if match:
+                return match.group(1).strip()
+        
+        # 尝试直接匹配SELECT语句
+        select_patterns = [
+            r'(SELECT\s+.*?LIMIT\s+\d+\s*;)',  # 带分号的完整SELECT语句
+            r'(SELECT\s+.*?LIMIT\s+\d+)'       # 不带分号的SELECT语句
+        ]
+        
+        for pattern in select_patterns:
+            match = re.search(pattern, text, flags=re.DOTALL | re.IGNORECASE)
+            if match:
+                return match.group(1).strip()
+        
+        # 处理深度思考模型可能输出的分析+SQL组合
+        # 先尝试切分，找到最后部分的SQL
+        lines = text.split('\n')
+        for i in range(len(lines)-1, -1, -1):
+            if lines[i].strip().upper().startswith('SELECT'):
+                # 从这一行开始提取到结尾
+                potential_sql = '\n'.join(lines[i:])
+                # 如果包含LIMIT则返回
+                if 'LIMIT' in potential_sql.upper():
+                    return potential_sql.strip()
+        
+        # 如果所有尝试都失败，返回原始文本
+        return text.strip()
