@@ -7,6 +7,13 @@
 ### Description
 大语言模型加持的自然语言转SQL插件，支持无缝链接数据库，实现零代码 SQL 查询。
 
+### 项目来源
+本项目是一个Dify平台插件，旨在让用户通过自然语言与数据库交互，无需编写SQL代码。
+- GitHub仓库：[https://github.com/jaguarliuu/rookie_text2data](https://github.com/jaguarliuu/rookie_text2data)
+- Dify插件市场地址：[marketplace.dify.ai/plugins/jaguarliuu/rookie_text2data](https://marketplace.dify.ai/plugins/jaguarliuu/rookie_text2data)
+
+原创作者：jaguarliuu
+项目灵感来源：解决非技术用户查询数据库的难题，通过大语言模型将自然语言转换为SQL。
 
 ### 声明
 承蒙厚爱，没有想到一个偶然的想法和基础实践受到这么多人的关注，在此表示感谢！
